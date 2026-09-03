@@ -58,9 +58,14 @@ namespace DangerousArena.Player
         [Tooltip("Optional child transform holding the player mesh/model for independent rotation.")]
         [SerializeField] private Transform visualTransform;
 
+        [Header("Fall Detection")]
+        [Tooltip("Y position threshold below which the player is considered fallen and dies.")]
+        [SerializeField] private float fallThreshold = -4.0f;
+
         // Public Events for other systems (Audio, VFX, Animation) to subscribe to
         public event Action OnJumped;
         public event Action OnLanded;
+        public event Action OnPlayerDied;
 
         // References & State
         private CharacterController characterController;
@@ -69,13 +74,16 @@ namespace DangerousArena.Player
         private bool isGrounded;
         private bool wasGroundedLastFrame;
         private bool isMovementEnabled = true;
+        private bool isAlive = true;
 
         // Public Properties
+        public bool IsAlive => isAlive;
         public bool IsMovementEnabled => isMovementEnabled;
         public bool IsGrounded => isGrounded;
         public Vector3 Velocity => characterController != null ? characterController.velocity : Vector3.zero;
         public Vector3 HorizontalVelocity => currentHorizontalVelocity;
         public float MoveSpeed => moveSpeed;
+        public float FallThreshold => fallThreshold;
 
         private void Awake()
         {
@@ -96,7 +104,13 @@ namespace DangerousArena.Player
         {
             UpdateGroundCheck();
 
-            if (isMovementEnabled)
+            // Check fall threshold while alive
+            if (isAlive && transform.position.y < fallThreshold)
+            {
+                Die();
+            }
+
+            if (isMovementEnabled && isAlive)
             {
                 Vector2 inputVector = ReadInputVector();
                 bool jumpInput = ReadJumpInput();
@@ -284,6 +298,36 @@ namespace DangerousArena.Player
         // --- PUBLIC API FOR GAME SYSTEMS (Death, Respawn, Teleport) ---
 
         /// <summary>
+        /// Handles player death: disables movement, marks player dead, resets velocity,
+        /// fires OnPlayerDied, and prevents repeated death calls.
+        /// </summary>
+        public void Die()
+        {
+            if (!isAlive)
+            {
+                return; // Guard against repeated death calls
+            }
+
+            isAlive = false;
+            SetMovementEnabled(false);
+            ResetVelocity();
+
+            Debug.Log("[PlayerController] Player died!");
+            OnPlayerDied?.Invoke();
+        }
+
+        /// <summary>
+        /// Respawns the player at a target position and restores active alive state.
+        /// </summary>
+        public void Respawn(Vector3 spawnPosition, Quaternion? spawnRotation = null)
+        {
+            isAlive = true;
+            Teleport(spawnPosition, spawnRotation);
+            SetMovementEnabled(true);
+            ResetVelocity();
+        }
+
+        /// <summary>
         /// Enables or disables player input and movement (e.g., when the player dies, game pauses, or level ends).
         /// </summary>
         public void SetMovementEnabled(bool isEnabled)
@@ -339,6 +383,34 @@ namespace DangerousArena.Player
         public void SetCamera(Camera newCamera)
         {
             playerCamera = newCamera;
+        }
+
+        // --- TILE INTERACTION DETECTION ---
+
+        private void OnControllerColliderHit(ControllerColliderHit hit)
+        {
+            if (!isAlive || hit == null || hit.gameObject == null)
+            {
+                return;
+            }
+
+            // 1. Find the Tile component on the collided GameObject
+            Tile tile = hit.gameObject.GetComponent<Tile>();
+            if (tile == null)
+            {
+                tile = hit.gameObject.GetComponentInParent<Tile>();
+            }
+
+            // 2. If the object has a Tile component: inspect its CURRENT tile type
+            if (tile != null)
+            {
+                // 3. If CurrentType == TileType.Danger: call the central Die() method
+                if (tile.CurrentType == TileType.Danger)
+                {
+                    Die();
+                }
+                // Safe, Bonus, and Finish tiles do nothing here
+            }
         }
     }
 }
