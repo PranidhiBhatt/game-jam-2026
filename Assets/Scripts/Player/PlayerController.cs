@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using DangerousArena.Gameplay;
 
 namespace DangerousArena.Player
 {
@@ -61,6 +62,7 @@ namespace DangerousArena.Player
         // Public Events for other systems (Audio, VFX, Animation) to subscribe to
         public event Action OnJumped;
         public event Action OnLanded;
+        public event Action OnPlayerDied;
 
         // References & State
         private CharacterController characterController;
@@ -69,8 +71,12 @@ namespace DangerousArena.Player
         private bool isGrounded;
         private bool wasGroundedLastFrame;
         private bool isMovementEnabled = true;
+        private bool isAlive = true;
+        private Vector3 initialPosition;
+        private Quaternion initialRotation;
 
         // Public Properties
+        public bool IsAlive => isAlive;
         public bool IsMovementEnabled => isMovementEnabled;
         public bool IsGrounded => isGrounded;
         public Vector3 Velocity => characterController != null ? characterController.velocity : Vector3.zero;
@@ -90,6 +96,9 @@ namespace DangerousArena.Player
             {
                 visualTransform = transform;
             }
+
+            initialPosition = transform.position;
+            initialRotation = transform.rotation;
         }
 
         private void Update()
@@ -339,6 +348,121 @@ namespace DangerousArena.Player
         public void SetCamera(Camera newCamera)
         {
             playerCamera = newCamera;
+        }
+
+        /// <summary>
+        /// Handles player death: disables movement, prevents duplicate death calls,
+        /// fires OnPlayerDied, and notifies GameManager.
+        /// Keeps the player object alive and reusable across restarts.
+        /// </summary>
+        public void Die()
+        {
+            if (!isAlive)
+            {
+                return; // Prevent duplicate death
+            }
+
+            // Do not process death if level was already won or finished
+            if (GameManager.Instance != null && !GameManager.Instance.IsGameplayActive)
+            {
+                return;
+            }
+
+            isAlive = false;
+            SetMovementEnabled(false);
+            ResetVelocity();
+
+            OnPlayerDied?.Invoke();
+
+            if (GameManager.Instance != null)
+            {
+                GameManager.Instance.HandlePlayerDeath();
+            }
+        }
+
+        /// <summary>
+        /// Respawns the player at a target position and restores active alive state.
+        /// </summary>
+        public void Respawn(Vector3 spawnPosition, Quaternion? spawnRotation = null)
+        {
+            isAlive = true;
+            Teleport(spawnPosition, spawnRotation);
+            SetMovementEnabled(true);
+        }
+
+        /// <summary>
+        /// Resets the player back to their recorded initial spawn position and rotation.
+        /// Re-enables movement and alive state for level restarts.
+        /// </summary>
+        public void ResetToInitialSpawn()
+        {
+            Respawn(initialPosition, initialRotation);
+        }
+
+        /// <summary>
+        /// Updates the recorded spawn point (useful for checkpoints or dynamic level placement).
+        /// </summary>
+        public void SetSpawnPoint(Vector3 position, Quaternion rotation)
+        {
+            initialPosition = position;
+            initialRotation = rotation;
+        }
+
+        /// <summary>
+        /// Resets the player to an active, movable state without moving their position.
+        /// </summary>
+        public void ResetPlayerState()
+        {
+            isAlive = true;
+            SetMovementEnabled(true);
+            ResetVelocity();
+        }
+
+        // --- TILE INTERACTION DETECTION ---
+
+        private void OnTriggerEnter(Collider other)
+        {
+            HandleTileInteraction(other.gameObject);
+        }
+
+        private void OnControllerColliderHit(ControllerColliderHit hit)
+        {
+            HandleTileInteraction(hit.gameObject);
+        }
+
+        private void HandleTileInteraction(GameObject hitObject)
+        {
+            if (!isAlive || hitObject == null)
+            {
+                return;
+            }
+
+            // Disallow tile interactions outside of active gameplay
+            if (GameManager.Instance != null && !GameManager.Instance.IsGameplayActive)
+            {
+                return;
+            }
+
+            // 1. Check Hazard (Red Tile / Trap)
+            if (hitObject.TryGetComponent<IPlayerHazard>(out var hazard))
+            {
+                hazard.TriggerHazard(gameObject);
+                return;
+            }
+
+            // 2. Check Bonus (Yellow Tile / Pickup)
+            if (hitObject.TryGetComponent<IPlayerBonus>(out var bonus))
+            {
+                bonus.CollectBonus(this);
+                return;
+            }
+
+            // 3. Check Finish (Goal Tile / Portal)
+            if (hitObject.TryGetComponent<IPlayerFinish>(out var finish))
+            {
+                finish.TriggerFinish(gameObject);
+                return;
+            }
         }
     }
 }
