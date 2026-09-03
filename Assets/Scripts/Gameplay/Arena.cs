@@ -1,9 +1,10 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
 /// Represents the playable arena container in Dangerous Arena.
-/// Provides a clean public API for gameplay systems to access and query
-/// arena tiles without requiring knowledge of the internal scene hierarchy.
+/// Provides a clean public API for gameplay systems (such as WorldManager)
+/// to retrieve and query arena tiles without requiring knowledge of the internal scene hierarchy.
 /// </summary>
 [DisallowMultipleComponent]
 public class Arena : MonoBehaviour
@@ -18,11 +19,11 @@ public class Arena : MonoBehaviour
     }
 
     /// <summary>
-    /// Returns all Tile components belonging to this arena.
+    /// Returns all Tile components belonging to this arena as a read-only list.
     /// Discovers and caches tiles from child objects if not already cached.
     /// </summary>
-    /// <returns>Array of all Tile components belonging to this arena.</returns>
-    public Tile[] GetTiles()
+    /// <returns>Read-only list of all Tile components belonging to this arena.</returns>
+    public IReadOnlyList<Tile> GetTiles()
     {
         if (cachedTiles == null || cachedTiles.Length == 0)
         {
@@ -31,6 +32,25 @@ public class Arena : MonoBehaviour
 
         return cachedTiles;
     }
+
+    /// <summary>
+    /// Returns all Tile components belonging to this arena as a direct array.
+    /// </summary>
+    /// <returns>Array of all Tile components belonging to this arena.</returns>
+    public Tile[] GetTilesArray()
+    {
+        if (cachedTiles == null || cachedTiles.Length == 0)
+        {
+            EnsureTilesCached();
+        }
+
+        return cachedTiles;
+    }
+
+    /// <summary>
+    /// Gets the total number of tiles belonging to this arena.
+    /// </summary>
+    public int TileCount => cachedTiles != null ? cachedTiles.Length : 0;
 
     /// <summary>
     /// Refreshes the internal cache of tiles by scanning child components.
