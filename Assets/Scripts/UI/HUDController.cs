@@ -45,6 +45,22 @@ public class HUDController : MonoBehaviour
     [Tooltip("Duration in seconds for the pulse to return to normal scale.")]
     [SerializeField] private float pulseDuration = 0.2f;
 
+    [Header("World Shift Warning Settings")]
+    [Tooltip("TextMeshPro component displaying the 'WORLD SHIFT!' notification.")]
+    [SerializeField] private TMP_Text worldShiftText;
+
+    [Tooltip("Optional CanvasGroup containing the World Shift display (used for fading).")]
+    [SerializeField] private CanvasGroup worldShiftCanvasGroup;
+
+    [Tooltip("World shift display message.")]
+    [SerializeField] private string worldShiftMessage = "WORLD SHIFT!";
+
+    [Tooltip("Duration in seconds the World Shift notification stays fully visible.")]
+    [SerializeField] private float worldShiftDisplayDuration = 1.5f;
+
+    [Tooltip("Duration in seconds for the World Shift notification to fade out.")]
+    [SerializeField] private float worldShiftFadeDuration = 0.5f;
+
     // Current displayed values
     private int currentTime;
     private int currentLevel;
@@ -54,6 +70,10 @@ public class HUDController : MonoBehaviour
     private Coroutine pulseCoroutine;
     private Vector3 originalTimeScale = Vector3.one;
 
+    // World shift state tracking
+    private Coroutine worldShiftCoroutine;
+    private Vector3 originalWorldShiftScale = Vector3.one;
+
     // Active event subscriptions for clean unsubscription
     private EventInfo subscribedTimerEvent;
     private object subscribedTimerTarget;
@@ -62,6 +82,10 @@ public class HUDController : MonoBehaviour
     private EventInfo subscribedGMEvent;
     private object subscribedGMTarget;
     private Delegate subscribedGMDelegate;
+
+    private EventInfo subscribedWorldEvent;
+    private object subscribedWorldTarget;
+    private Delegate subscribedWorldDelegate;
 
     #region Unity Lifecycle
 
@@ -79,6 +103,9 @@ public class HUDController : MonoBehaviour
         // Initialize HUD display with default required values (TIME: 17, LEVEL: 1)
         UpdateTime(initialTime);
         UpdateLevel(initialLevel);
+
+        // Ensure World Shift notification is initially hidden
+        HideWorldShiftImmediate();
     }
 
     private void OnEnable()
@@ -89,7 +116,7 @@ public class HUDController : MonoBehaviour
     private void Start()
     {
         // If managers initialized after OnEnable (e.g. in Awake/Start of another script), retry subscription
-        if (subscribedTimerEvent == null || subscribedGMEvent == null)
+        if (subscribedTimerEvent == null || subscribedGMEvent == null || subscribedWorldEvent == null)
         {
             SubscribeToManagers();
         }
@@ -98,12 +125,14 @@ public class HUDController : MonoBehaviour
     private void OnDisable()
     {
         ResetWarningAppearance();
+        ResetWorldShiftAppearance();
         UnsubscribeFromManagers();
     }
 
     private void OnDestroy()
     {
         ResetWarningAppearance();
+        ResetWorldShiftAppearance();
         UnsubscribeFromManagers();
     }
 
@@ -179,6 +208,44 @@ public class HUDController : MonoBehaviour
         if (gameManagerInstance != null && subscribedGMEvent == null)
         {
             TrySubscribeGameManagerEvents(gameManagerInstance.GetType(), gameManagerInstance);
+        }
+    }
+
+    /// <summary>
+    /// Displays the "WORLD SHIFT!" notification banner.
+    /// Appears immediately when the world-change event occurs, stays visible briefly,
+    /// fades out automatically, and becomes hidden.
+    /// Strictly event-driven (no 20-second timer, no Update() polling).
+    /// </summary>
+    [ContextMenu("Test World Shift")]
+    public void TriggerWorldShift()
+    {
+        if (worldShiftText == null && worldShiftCanvasGroup == null)
+        {
+            EnsureTextReferences();
+            if (worldShiftText == null && worldShiftCanvasGroup == null) return;
+        }
+
+        if (worldShiftCoroutine != null)
+        {
+            StopCoroutine(worldShiftCoroutine);
+        }
+
+        if (gameObject.activeInHierarchy)
+        {
+            worldShiftCoroutine = StartCoroutine(WorldShiftRoutine());
+        }
+    }
+
+    /// <summary>
+    /// Explicit runtime binding method if WorldManager is spawned or registered dynamically.
+    /// </summary>
+    /// <param name="worldManagerInstance">The instance of WorldManager.</param>
+    public void BindWorldManager(object worldManagerInstance)
+    {
+        if (worldManagerInstance != null && subscribedWorldEvent == null)
+        {
+            TrySubscribeWorldEvents(worldManagerInstance.GetType(), worldManagerInstance);
         }
     }
 
@@ -272,18 +339,133 @@ public class HUDController : MonoBehaviour
 
     #endregion
 
+    #region World Shift System
+
+    /// <summary>
+    /// Coroutine controlling the presentation of the World Shift warning:
+    /// 1. Immediately shows the banner at full opacity.
+    /// 2. Holds visibility for worldShiftDisplayDuration.
+    /// 3. Smoothly fades opacity to 0 over worldShiftFadeDuration.
+    /// 4. Hides the GameObject.
+    /// </summary>
+    private IEnumerator WorldShiftRoutine()
+    {
+        if (worldShiftText != null)
+        {
+            worldShiftText.text = worldShiftMessage;
+            worldShiftText.gameObject.SetActive(true);
+            worldShiftText.rectTransform.localScale = originalWorldShiftScale * 1.3f;
+        }
+
+        if (worldShiftCanvasGroup != null)
+        {
+            worldShiftCanvasGroup.gameObject.SetActive(true);
+            worldShiftCanvasGroup.alpha = 1f;
+        }
+        else if (worldShiftText != null)
+        {
+            Color c = worldShiftText.color;
+            c.a = 1f;
+            worldShiftText.color = c;
+        }
+
+        if (AudioManager.Instance != null)
+        {
+            AudioManager.Instance.PlayWorldShift();
+        }
+
+        // Punch scale down from 1.3 to 1.0 smoothly for impact
+        float punchElapsed = 0f;
+        float punchDuration = 0.25f;
+        Vector3 peakScale = originalWorldShiftScale * 1.3f;
+
+        while (punchElapsed < punchDuration)
+        {
+            punchElapsed += Time.unscaledDeltaTime;
+            float t = Mathf.Clamp01(punchElapsed / punchDuration);
+            float smoothT = Mathf.Sin(t * Mathf.PI * 0.5f);
+            if (worldShiftText != null)
+            {
+                worldShiftText.rectTransform.localScale = Vector3.Lerp(peakScale, originalWorldShiftScale, smoothT);
+            }
+            yield return null;
+        }
+
+        if (worldShiftText != null)
+        {
+            worldShiftText.rectTransform.localScale = originalWorldShiftScale;
+        }
+
+        // Stay visible briefly
+        float remainingDisplay = Mathf.Max(0f, worldShiftDisplayDuration - punchDuration);
+        yield return new WaitForSecondsRealtime(remainingDisplay);
+
+        // Fade out smoothly
+        float elapsed = 0f;
+        while (elapsed < worldShiftFadeDuration)
+        {
+            elapsed += Time.unscaledDeltaTime;
+            float alpha = Mathf.Clamp01(1f - (elapsed / worldShiftFadeDuration));
+
+            if (worldShiftCanvasGroup != null)
+            {
+                worldShiftCanvasGroup.alpha = alpha;
+            }
+            else if (worldShiftText != null)
+            {
+                Color c = worldShiftText.color;
+                c.a = alpha;
+                worldShiftText.color = c;
+            }
+
+            yield return null;
+        }
+
+        ResetWorldShiftAppearance();
+    }
+
+    private void ResetWorldShiftAppearance()
+    {
+        if (worldShiftCoroutine != null)
+        {
+            StopCoroutine(worldShiftCoroutine);
+            worldShiftCoroutine = null;
+        }
+
+        HideWorldShiftImmediate();
+    }
+
+    private void HideWorldShiftImmediate()
+    {
+        if (worldShiftText != null)
+        {
+            worldShiftText.rectTransform.localScale = originalWorldShiftScale;
+            worldShiftText.gameObject.SetActive(false);
+        }
+
+        if (worldShiftCanvasGroup != null)
+        {
+            worldShiftCanvasGroup.alpha = 0f;
+            worldShiftCanvasGroup.gameObject.SetActive(false);
+        }
+    }
+
+    #endregion
+
     #region Safe Manager Subscriptions
 
     private void SubscribeToManagers()
     {
         TrySubscribeTimerManager();
         TrySubscribeGameManager();
+        TrySubscribeWorldManager();
     }
 
     private void UnsubscribeFromManagers()
     {
         TryUnsubscribeTimerManager();
         TryUnsubscribeGameManager();
+        TryUnsubscribeWorldManager();
     }
 
     /// <summary>
@@ -477,6 +659,139 @@ public class HUDController : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Safely locates WorldManager or GameManager and subscribes to world shift / world change events.
+    /// Does not throw NullReferenceException if managers are temporarily unavailable.
+    /// </summary>
+    private void TrySubscribeWorldManager()
+    {
+        if (subscribedWorldEvent != null) return;
+
+        Type[] candidateTypes = {
+            FindType("WorldManager"),
+            FindType("DangerousArena.Managers.WorldManager"),
+            FindType("DangerousArena.WorldManager"),
+            FindType("ArenaManager"),
+            FindType("DangerousArena.Managers.ArenaManager"),
+            FindType("DangerousArena.ArenaManager"),
+            FindType("LevelManager"),
+            FindType("DangerousArena.Managers.LevelManager"),
+            FindType("DangerousArena.LevelManager"),
+            FindType("GameManager"),
+            FindType("DangerousArena.Managers.GameManager"),
+            FindType("DangerousArena.GameManager")
+        };
+
+        foreach (Type targetType in candidateTypes)
+        {
+            if (targetType != null)
+            {
+                object instance = ResolveInstance(targetType);
+                if (TrySubscribeWorldEvents(targetType, instance))
+                {
+                    break;
+                }
+            }
+        }
+    }
+
+    private bool TrySubscribeWorldEvents(Type targetType, object targetInstance)
+    {
+        // Candidate event names for world change / world shift in order of project conventions
+        string[] candidateEvents = {
+            "OnWorldShift",
+            "OnWorldShifted",
+            "OnWorldChanged",
+            "OnWorldChange",
+            "OnArenaShift",
+            "OnArenaShifted",
+            "OnArenaChanged",
+            "OnShift",
+            "OnStageShift"
+        };
+
+        foreach (string eventName in candidateEvents)
+        {
+            EventInfo ev = targetType.GetEvent(eventName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+            if (ev != null)
+            {
+                MethodInfo invokeMethod = ev.EventHandlerType.GetMethod("Invoke");
+                if (invokeMethod != null)
+                {
+                    ParameterInfo[] parameters = invokeMethod.GetParameters();
+                    MethodInfo targetHandler = null;
+
+                    if (parameters.Length == 0)
+                    {
+                        targetHandler = GetType().GetMethod("HandleWorldShiftVoid", BindingFlags.NonPublic | BindingFlags.Instance);
+                    }
+                    else if (parameters.Length == 1)
+                    {
+                        if (parameters[0].ParameterType == typeof(int))
+                        {
+                            targetHandler = GetType().GetMethod("HandleWorldShiftInt", BindingFlags.NonPublic | BindingFlags.Instance);
+                        }
+                        else if (parameters[0].ParameterType == typeof(float))
+                        {
+                            targetHandler = GetType().GetMethod("HandleWorldShiftFloat", BindingFlags.NonPublic | BindingFlags.Instance);
+                        }
+                        else if (parameters[0].ParameterType == typeof(string))
+                        {
+                            targetHandler = GetType().GetMethod("HandleWorldShiftString", BindingFlags.NonPublic | BindingFlags.Instance);
+                        }
+                        else if (parameters[0].ParameterType == typeof(bool))
+                        {
+                            targetHandler = GetType().GetMethod("HandleWorldShiftBool", BindingFlags.NonPublic | BindingFlags.Instance);
+                        }
+                    }
+
+                    if (targetHandler != null)
+                    {
+                        try
+                        {
+                            Delegate del = Delegate.CreateDelegate(ev.EventHandlerType, this, targetHandler);
+                            bool isStatic = ev.GetAddMethod(true).IsStatic;
+                            object target = isStatic ? null : targetInstance;
+
+                            ev.AddEventHandler(target, del);
+                            subscribedWorldEvent = ev;
+                            subscribedWorldTarget = target;
+                            subscribedWorldDelegate = del;
+                            return true;
+                        }
+                        catch (Exception ex)
+                        {
+                            Debug.LogWarning("[HUDController] Failed to bind world event " + eventName + ": " + ex.Message);
+                        }
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private void TryUnsubscribeWorldManager()
+    {
+        if (subscribedWorldEvent != null && subscribedWorldDelegate != null)
+        {
+            try
+            {
+                subscribedWorldEvent.RemoveEventHandler(subscribedWorldTarget, subscribedWorldDelegate);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[HUDController] Error unsubscribing from WorldManager: " + ex.Message);
+            }
+            finally
+            {
+                subscribedWorldEvent = null;
+                subscribedWorldTarget = null;
+                subscribedWorldDelegate = null;
+            }
+        }
+    }
+
     #endregion
 
     #region Event Handlers
@@ -534,13 +849,38 @@ public class HUDController : MonoBehaviour
         }
     }
 
+    private void HandleWorldShiftVoid()
+    {
+        TriggerWorldShift();
+    }
+
+    private void HandleWorldShiftInt(int _)
+    {
+        TriggerWorldShift();
+    }
+
+    private void HandleWorldShiftFloat(float _)
+    {
+        TriggerWorldShift();
+    }
+
+    private void HandleWorldShiftString(string _)
+    {
+        TriggerWorldShift();
+    }
+
+    private void HandleWorldShiftBool(bool _)
+    {
+        TriggerWorldShift();
+    }
+
     #endregion
 
     #region Helpers
 
     private void EnsureTextReferences()
     {
-        if (timeText != null && levelText != null) return;
+        if (timeText != null && levelText != null && worldShiftText != null) return;
 
         TMP_Text[] tmpTexts = GetComponentsInChildren<TMP_Text>(true);
         foreach (var textComp in tmpTexts)
@@ -554,6 +894,20 @@ public class HUDController : MonoBehaviour
             {
                 levelText = textComp;
             }
+            else if (worldShiftText == null && (nameLower.Contains("shift") || nameLower.Contains("world")))
+            {
+                worldShiftText = textComp;
+            }
+        }
+
+        if (worldShiftCanvasGroup == null && worldShiftText != null)
+        {
+            worldShiftCanvasGroup = worldShiftText.GetComponent<CanvasGroup>();
+        }
+
+        if (worldShiftText != null)
+        {
+            originalWorldShiftScale = worldShiftText.rectTransform.localScale;
         }
     }
 
