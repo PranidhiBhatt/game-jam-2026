@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using DangerousArena.Gameplay;
 
 namespace DangerousArena.Player
 {
@@ -58,10 +59,6 @@ namespace DangerousArena.Player
         [Tooltip("Optional child transform holding the player mesh/model for independent rotation.")]
         [SerializeField] private Transform visualTransform;
 
-        [Header("Fall Detection")]
-        [Tooltip("Y position threshold below which the player is considered fallen and dies.")]
-        [SerializeField] private float fallThreshold = -4.0f;
-
         // Public Events for other systems (Audio, VFX, Animation) to subscribe to
         public event Action OnJumped;
         public event Action OnLanded;
@@ -75,6 +72,8 @@ namespace DangerousArena.Player
         private bool wasGroundedLastFrame;
         private bool isMovementEnabled = true;
         private bool isAlive = true;
+        private Vector3 initialPosition;
+        private Quaternion initialRotation;
 
         // Public Properties
         public bool IsAlive => isAlive;
@@ -83,7 +82,6 @@ namespace DangerousArena.Player
         public Vector3 Velocity => characterController != null ? characterController.velocity : Vector3.zero;
         public Vector3 HorizontalVelocity => currentHorizontalVelocity;
         public float MoveSpeed => moveSpeed;
-        public float FallThreshold => fallThreshold;
 
         private void Awake()
         {
@@ -98,19 +96,16 @@ namespace DangerousArena.Player
             {
                 visualTransform = transform;
             }
+
+            initialPosition = transform.position;
+            initialRotation = transform.rotation;
         }
 
         private void Update()
         {
             UpdateGroundCheck();
 
-            // Check fall threshold while alive
-            if (isAlive && transform.position.y < fallThreshold)
-            {
-                Die();
-            }
-
-            if (isMovementEnabled && isAlive)
+            if (isMovementEnabled)
             {
                 Vector2 inputVector = ReadInputVector();
                 bool jumpInput = ReadJumpInput();
@@ -298,36 +293,6 @@ namespace DangerousArena.Player
         // --- PUBLIC API FOR GAME SYSTEMS (Death, Respawn, Teleport) ---
 
         /// <summary>
-        /// Handles player death: disables movement, marks player dead, resets velocity,
-        /// fires OnPlayerDied, and prevents repeated death calls.
-        /// </summary>
-        public void Die()
-        {
-            if (!isAlive)
-            {
-                return; // Guard against repeated death calls
-            }
-
-            isAlive = false;
-            SetMovementEnabled(false);
-            ResetVelocity();
-
-            Debug.Log("[PlayerController] Player died!");
-            OnPlayerDied?.Invoke();
-        }
-
-        /// <summary>
-        /// Respawns the player at a target position and restores active alive state.
-        /// </summary>
-        public void Respawn(Vector3 spawnPosition, Quaternion? spawnRotation = null)
-        {
-            isAlive = true;
-            Teleport(spawnPosition, spawnRotation);
-            SetMovementEnabled(true);
-            ResetVelocity();
-        }
-
-        /// <summary>
         /// Enables or disables player input and movement (e.g., when the player dies, game pauses, or level ends).
         /// </summary>
         public void SetMovementEnabled(bool isEnabled)
@@ -385,31 +350,118 @@ namespace DangerousArena.Player
             playerCamera = newCamera;
         }
 
-        // --- TILE INTERACTION DETECTION ---
-
-        private void OnControllerColliderHit(ControllerColliderHit hit)
+        /// <summary>
+        /// Handles player death: disables movement, prevents duplicate death calls,
+        /// fires OnPlayerDied, and notifies GameManager.
+        /// Keeps the player object alive and reusable across restarts.
+        /// </summary>
+        public void Die()
         {
-            if (!isAlive || hit == null || hit.gameObject == null)
+            if (!isAlive)
+            {
+                return; // Prevent duplicate death
+            }
+
+            // Do not process death if level was already won or finished
+            if (GameManager.Instance != null && !GameManager.Instance.IsGameplayActive)
             {
                 return;
             }
 
-            // 1. Find the Tile component on the collided GameObject
-            Tile tile = hit.gameObject.GetComponent<Tile>();
-            if (tile == null)
+            isAlive = false;
+            SetMovementEnabled(false);
+            ResetVelocity();
+
+            OnPlayerDied?.Invoke();
+
+            if (GameManager.Instance != null)
             {
-                tile = hit.gameObject.GetComponentInParent<Tile>();
+                GameManager.Instance.HandlePlayerDeath();
+            }
+        }
+
+        /// <summary>
+        /// Respawns the player at a target position and restores active alive state.
+        /// </summary>
+        public void Respawn(Vector3 spawnPosition, Quaternion? spawnRotation = null)
+        {
+            isAlive = true;
+            Teleport(spawnPosition, spawnRotation);
+            SetMovementEnabled(true);
+        }
+
+        /// <summary>
+        /// Resets the player back to their recorded initial spawn position and rotation.
+        /// Re-enables movement and alive state for level restarts.
+        /// </summary>
+        public void ResetToInitialSpawn()
+        {
+            Respawn(initialPosition, initialRotation);
+        }
+
+        /// <summary>
+        /// Updates the recorded spawn point (useful for checkpoints or dynamic level placement).
+        /// </summary>
+        public void SetSpawnPoint(Vector3 position, Quaternion rotation)
+        {
+            initialPosition = position;
+            initialRotation = rotation;
+        }
+
+        /// <summary>
+        /// Resets the player to an active, movable state without moving their position.
+        /// </summary>
+        public void ResetPlayerState()
+        {
+            isAlive = true;
+            SetMovementEnabled(true);
+            ResetVelocity();
+        }
+
+        // --- TILE INTERACTION DETECTION ---
+
+        private void OnTriggerEnter(Collider other)
+        {
+            HandleTileInteraction(other.gameObject);
+        }
+
+        private void OnControllerColliderHit(ControllerColliderHit hit)
+        {
+            HandleTileInteraction(hit.gameObject);
+        }
+
+        private void HandleTileInteraction(GameObject hitObject)
+        {
+            if (!isAlive || hitObject == null)
+            {
+                return;
             }
 
-            // 2. If the object has a Tile component: inspect its CURRENT tile type
-            if (tile != null)
+            // Disallow tile interactions outside of active gameplay
+            if (GameManager.Instance != null && !GameManager.Instance.IsGameplayActive)
             {
-                // 3. If CurrentType == TileType.Danger: call the central Die() method
-                if (tile.CurrentType == TileType.Danger)
-                {
-                    Die();
-                }
-                // Safe, Bonus, and Finish tiles do nothing here
+                return;
+            }
+
+            // 1. Check Hazard (Red Tile / Trap)
+            if (hitObject.TryGetComponent<IPlayerHazard>(out var hazard))
+            {
+                hazard.TriggerHazard(gameObject);
+                return;
+            }
+
+            // 2. Check Bonus (Yellow Tile / Pickup)
+            if (hitObject.TryGetComponent<IPlayerBonus>(out var bonus))
+            {
+                bonus.CollectBonus(this);
+                return;
+            }
+
+            // 3. Check Finish (Goal Tile / Portal)
+            if (hitObject.TryGetComponent<IPlayerFinish>(out var finish))
+            {
+                finish.TriggerFinish(gameObject);
+                return;
             }
         }
     }
